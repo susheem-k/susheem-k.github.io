@@ -413,6 +413,12 @@ h1 {
   font-size: 1.05rem;
 }
 
+.empty.compact {
+  margin: 0.5rem 0 1.5rem;
+  padding: 1rem 1.25rem;
+  font-size: 0.95rem;
+}
+
 /* Lists */
 
 .feed {
