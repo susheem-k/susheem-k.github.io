@@ -519,6 +519,16 @@ h1 {
   max-width: 40rem;
 }
 
+.experiment .subprojects {
+  margin: 1.1rem 0 0.9rem;
+  padding-left: 1rem;
+  border-left: 2px solid var(--stroke);
+}
+
+.experiment .sub + .sub { margin-top: 1rem; }
+
+.experiment.star .subprojects p { font-size: 1rem; }
+
 .experiment h3 {
   margin: 0 0 0.25rem;
   font-size: 1.2rem;
