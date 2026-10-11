@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>INT8 quantization playground</title>
+<style>
+  body{margin:0;background:#0a1314;color:#e8f1ef;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:14px;line-height:1.5}
+  .wrap{max-width:760px;margin:0 auto;padding:24px 16px}
+  h1{font-size:22px;font-weight:500;margin:0 0 4px}
+  h2{font-size:15px;font-weight:500;margin:16px 0 6px}
+  .sub{color:#9db8b4;font-size:13px;margin:0 0 16px}
+  .sec{font-size:17px;font-weight:500;margin:28px 0 4px}
+  .card{background:#0f1b1c;border-radius:12px;padding:16px;margin-bottom:8px}
+  .card label{font-size:12px;color:#9db8b4;display:block;margin-bottom:4px}
+  .card input,.card select{background:#1a2d2e;color:#e8f1ef;border:1px solid #3b5a58;border-radius:8px;height:34px;padding:0 8px;width:100%;font-size:14px;box-sizing:border-box}
+  .card button{background:#1a2d2e;color:#e8f1ef;border:1px solid #3b5a58;border-radius:8px;height:34px;padding:0 12px;font-size:13px;cursor:pointer}
+  .card button:hover{background:#244042}
+  .card .row{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:10px}
+  .card .m{background:#16282a;border-radius:8px;padding:10px 12px}
+  .card .m span{display:block;font-size:12px;color:#9db8b4}
+  .card .m b{font-size:20px;font-weight:500}
+  .card .m.hero b{color:#ff7a59}
+  .card .m.clipc b{color:#fbbf24}
+  .cmp{width:100%;border-collapse:collapse;font-size:13px}
+  .cmp th{font-weight:500;color:#9db8b4;text-align:left;font-size:12px;padding:4px 8px}
+  .cmp td{padding:7px 8px;border-top:1px solid #1f3a3b}
+  .cmp tbody tr{cursor:pointer}
+  .cmp tbody tr:hover td{background:#14282a}
+  .cmp tr.sel td{background:#183033;border-top-color:#2dd4bf}
+  .cmp .bar{height:6px;border-radius:3px;background:#ff7a59;margin-bottom:3px}
+  .cmp .best{color:#4ade80}
+  .insight{background:#16282a;border-left:3px solid #2dd4bf;border-radius:6px;padding:8px 12px;font-size:13px;margin:8px 0}
+  .note{font-size:12px;color:#9db8b4}
+  .g{background:#16282a;border-radius:8px;padding:8px 12px;margin-bottom:6px;font-size:13px}
+  .g b{font-weight:500;color:#ff9b80}
+  .g span{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;color:#9db8b4}
+  .dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px;vertical-align:-1px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>INT8 quantization playground</h1>
+  <p class="sub">Two experiments. Part 1 shows distinct float values collapsing onto shared INT8 codes. Part 2 shows how many scales you share across a weight matrix (per-tensor, per-row, per-column or block-wise) changes what an outlier costs you.</p>
+  <h2 class="sec">1. Where values collapse</h2>
+  <p class="sub">Enter a range, generate 100 random points, and watch distinct float values collapse onto shared INT8 codes. Add clipping to trade outlier accuracy for finer resolution.</p>
+  <div id="qs" class="card">
+    <div class="row">
+      <div><label for="lo">Range min</label><input id="lo" type="number" value="-1" step="any"></div>
+      <div><label for="hi">Range max</label><input id="hi" type="number" value="6" step="any"></div>
+      <div><label for="mode">Mode</label><select id="mode"><option value="sym">Symmetric</option><option value="asym">Asymmetric</option></select></div>
+      <div><label for="dist">Distribution</label><select id="dist"><option value="uni">Uniform</option><option value="gau">Gaussian (clustered)</option><option value="out">Tight cluster + one outlier</option></select></div>
+    </div>
+    <div class="row">
+      <div><label for="clip">Clipping</label><select id="clip"><option value="none">None (use entered range)</option><option value="pct">Percentile of points</option><option value="man">Manual clip range</option></select></div>
+      <div id="pctbox" style="display:none"><label for="pct">Keep central % of points</label><input id="pct" type="number" value="99" min="1" max="100" step="0.5"></div>
+      <div id="manbox1" style="display:none"><label for="cmin">Clip min</label><input id="cmin" type="number" value="-1" step="any"></div>
+      <div id="manbox2" style="display:none"><label for="cmax">Clip max</label><input id="cmax" type="number" value="3" step="any"></div>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px">
+      <button id="go">Generate new 100 points</button>
+      <button data-p="-1,1">[-1, 1]</button>
+      <button data-p="0,6">[0, 6]</button>
+      <button data-p="-1,6">[-1, 6]</button>
+      <button data-p="-0.5,100">[-0.5, 100]</button>
+      <button data-p="0,1000">[0, 1000]</button>
+    </div>
+    <div id="err" style="color:#ff7a59;font-size:13px;min-height:18px;margin-bottom:6px"></div>
+    <div class="row" id="metrics"></div>
+
+    <h2>Where individual values collapse</h2>
+    <div class="note" style="margin-bottom:4px">Top: the original values, each one distinct. Bottom: each INT8 code is a column, and every point that lands in it stacks up. A tall stack is many different floats reduced to one identical number.</div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:6px 0">
+      <button id="zin" aria-label="Zoom in">Zoom in</button>
+      <button id="zout" aria-label="Zoom out">Zoom out</button>
+      <button id="zbig">Zoom to biggest collision</button>
+      <button id="zreset">Reset view</button>
+    </div>
+    <div class="note" style="margin-bottom:4px">Scroll over the plot to zoom at the cursor, drag to pan.</div>
+    <svg id="strip" viewBox="0 0 680 335" width="100%" style="cursor:grab;touch-action:none" role="img" aria-label="Original float values on top, with points stacking in columns by the INT8 code they collapse into"></svg>
+    <div class="note" id="legend" style="display:flex;gap:16px;flex-wrap:wrap;margin-top:4px"></div>
+
+    <h2>Biggest collisions</h2>
+    <div id="coll"></div>
+  </div>
+  <p class="note" style="margin-top:14px">
+    Symmetric: scale = max(|min|, |max|) / 127, zero-point 0, codes -127..127.
+    Asymmetric: scale = (max - min) / 255, zero-point shifts the range onto -128..127.
+    Dequantized value = (code - zero-point) * scale. With no clipping the quantization range is the range you enter, not the min/max of the random points.
+    Clipping shrinks that range: the step size gets smaller (finer resolution for most points), but any point outside the clip range saturates to the nearest edge code and takes a large error. Percentile clipping derives the range from the points themselves (in symmetric mode from their absolute values).
+    The tight cluster + one outlier option mimics a real tensor where one extreme value stretches the range and squeezes everything else, which is the case clipping is meant to fix.
+  </p>
+
+  <h2 class="sec">2. Granularity lab: how many weights share one scale?</h2>
+  <p class="sub">A 16 &times; 32 weight matrix of typical values (standard deviation 1), quantized to INT8. Per-tensor uses one scale for everything. Per-row and per-column use one per row or column. Block-wise uses one per group of consecutive weights along each row. More scales shrink the blast radius of an outlier, but each scale is extra data to store.</p>
+  <div class="card" id="mx">
+    <div class="row">
+      <div><label for="m-mode">Mode</label><select id="m-mode"><option value="sym">Symmetric</option><option value="asym">Asymmetric</option></select></div>
+      <div><label for="m-gran">Granularity</label><select id="m-gran"><option value="tensor">Per-tensor</option><option value="row">Per-row</option><option value="col">Per-column</option><option value="block" selected>Block-wise</option></select></div>
+      <div><label for="m-b">Block size (block-wise)</label><select id="m-b"><option value="2">2</option><option value="4">4</option><option value="8" selected>8</option><option value="16">16</option><option value="32">32</option></select></div>
+      <div><label for="m-out">Outlier pattern</label><select id="m-out"><option value="none">None</option><option value="one" selected>Single outlier</option><option value="few">Five scattered outliers</option><option value="col">One outlier column</option><option value="row">One outlier row</option></select></div>
+      <div><label for="m-mag">Outlier size (&times; std dev)</label><input id="m-mag" type="number" value="20" min="1" step="1"></div>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px">
+      <button id="m-new">New random weights</button>
+    </div>
+    <div class="row" id="m-metrics"></div>
+    <div class="insight" id="m-insight"></div>
+
+    <h2>Original weights</h2>
+    <div class="note" style="margin-bottom:4px">Teal is negative, coral is positive, and the colour saturates at 3 standard deviations. Amber outlines mark the injected outliers. Hover any cell for its exact values.</div>
+    <svg id="m-svg1" viewBox="0 0 680 320" width="100%" role="img" aria-label="Heatmap of a 16 by 32 weight matrix with outliers outlined"></svg>
+
+    <h2>Absolute error after the round trip</h2>
+    <div class="note" style="margin-bottom:4px" id="m-errnote"></div>
+    <svg id="m-svg2" viewBox="0 0 680 345" width="100%" role="img" aria-label="Heatmap of absolute quantization error for the selected granularity"></svg>
+
+    <h2>All four side by side</h2>
+    <div class="note" style="margin-bottom:4px">Click a row to select that granularity.</div>
+    <table class="cmp" id="m-cmp"></table>
+    <p class="note" style="margin-top:10px">
+      Bits per weight assumes one 16-bit scale per group, plus an 8-bit zero-point per group in asymmetric mode, on top of the 8 bits for each weight.
+      Block-wise here means groups of consecutive weights within a row, so a block of 32 equals per-row in this 32-column matrix.
+      No clipping or calibration is applied: each group's range comes straight from its own min and max, and rounding is to nearest.
+      Which axis is a "row" depends on layout. PyTorch's Linear layer stores weights as [out_features, in_features], so per-row there is per-output-channel.
+      The data is random, not a real model's weights: it shows the mechanism, not a benchmark.
+    </p>
+  </div>
+</div>
+<script>
+const N=100;let pts=[];let view=null;let bigLevel=null;let lastS=1;
+const $=id=>document.getElementById(id);
+const fmt=x=>Math.abs(x)>=100?x.toFixed(1):Math.abs(x)>=1?x.toFixed(3):x.toPrecision(3);
+function gauss(){let u=0,v=0;while(!u)u=Math.random();while(!v)v=Math.random();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v)}
+function gen(){
+  const lo=parseFloat($('lo').value),hi=parseFloat($('hi').value);
+  if(!(hi>lo)){return}
+  const d=$('dist').value;
+  pts=[];
+  if(d==='out'){
+    const c=(lo+hi)/2,w=(hi-lo)*0.02;
+    for(let i=0;i<N-1;i++)pts.push(c-w/2+Math.random()*w);
+    pts.push(hi);
+    return;
+  }
+  for(let i=0;i<N;i++){
+    if(d==='uni'){pts.push(lo+Math.random()*(hi-lo))}
+    else{let x=(lo+hi)/2+gauss()*(hi-lo)/10;pts.push(Math.min(hi,Math.max(lo,x)))}
+  }
+}
+function updateClipUI(){
+  const m=$('clip').value;
+  $('pctbox').style.display=m==='pct'?'':'none';
+  $('manbox1').style.display=m==='man'?'':'none';
+  $('manbox2').style.display=m==='man'?'':'none';
+}
+function run(){
+  const lo=parseFloat($('lo').value),hi=parseFloat($('hi').value),mode=$('mode').value;
+  const err=$('err');
+  if(isNaN(lo)||isNaN(hi)){err.textContent='Enter both a min and a max.';return}
+  if(!(hi>lo)){err.textContent='Max must be greater than min.';return}
+  err.textContent='';
+  if(!pts.length)gen();
+
+  const cm=$('clip').value;
+  let cl=lo,ch=hi,clipActive=false;
+  if(cm==='pct'){
+    const P=parseFloat($('pct').value);
+    if(isNaN(P)||P<=0||P>100){err.textContent='Enter a percentage between 1 and 100.';return}
+    if(mode==='sym'){
+      const ab=pts.map(Math.abs).sort((x,y)=>x-y);
+      const k=Math.min(N-1,Math.max(0,Math.floor(P/100*(N-1)+1e-9)));
+      cl=-ab[k];ch=ab[k];
+    }else{
+      const srt=[...pts].sort((x,y)=>x-y);
+      const ql=(1-P/100)/2,qu=1-ql;
+      cl=srt[Math.min(N-1,Math.max(0,Math.ceil(ql*(N-1)-1e-9)))];
+      ch=srt[Math.min(N-1,Math.max(0,Math.floor(qu*(N-1)+1e-9)))];
+    }
+    if(!(ch>cl)){err.textContent='That percentile collapses the clip range. Raise the percentage.';return}
+    clipActive=true;
+  }else if(cm==='man'){
+    cl=parseFloat($('cmin').value);ch=parseFloat($('cmax').value);
+    if(isNaN(cl)||isNaN(ch)){err.textContent='Enter both a clip min and a clip max.';return}
+    if(!(ch>cl)){err.textContent='Clip max must be greater than clip min.';return}
+    clipActive=true;
+  }
+
+  let s,zp,qmin,qmax;
+  if(mode==='sym'){s=Math.max(Math.abs(cl),Math.abs(ch))/127;zp=0;qmin=-127;qmax=127}
+  else{s=(ch-cl)/255;zp=-128-Math.round(cl/s);qmin=-128;qmax=127}
+  lastS=s;
+  const raw=pts.map(x=>Math.round(x/s)+zp);
+  const clp=raw.map(c=>c<qmin||c>qmax);
+  const q=raw.map(c=>Math.max(qmin,Math.min(qmax,c)));
+  const dq=q.map(c=>(c-zp)*s);
+  const mae=pts.reduce((acc,x,i)=>acc+Math.abs(x-dq[i]),0)/N;
+  const nClip=clp.filter(Boolean).length;
+  const cards=[['Step size (scale)',fmt(s),''],['Zero-point',zp,''],['Mean abs error',fmt(mae),' hero']];
+  if(clipActive){
+    cards.push(['Clip range',(mode==='sym'?'±'+fmt(ch):fmt(cl)+' to '+fmt(ch)),' clipc']);
+    cards.push(['Clipped points',nClip,' clipc']);
+  }
+  $('metrics').innerHTML=cards.map(c=>'<div class="m'+c[2]+'"><span>'+c[0]+'</span><b>'+c[1]+'</b></div>').join('');
+
+  const g=new Map();
+  q.forEach((c,i)=>{if(!g.has(c))g.set(c,[]);g.get(c).push(i)});
+  g.forEach(idx=>idx.sort((i,j)=>pts[i]-pts[j]));
+  let shared=0,uniq=0;
+  g.forEach(idx=>{if(idx.length>1)shared+=idx.length;else uniq++});
+  const groups=[...g.entries()].filter(e=>e[1].length>1).sort((x,y)=>y[1].length-x[1].length);
+  bigLevel=groups.length?(groups[0][0]-zp)*s:null;
+
+  const W=640,X0=20,pad=(hi-lo)*0.02;
+  if(!view)view=[lo-pad,hi+pad];
+  const a=view[0],b=view[1];
+  const X=v=>X0+(v-a)/(b-a)*W;
+  const pxStep=s/(b-a)*W;
+  const zf=(hi-lo)*1.04/(b-a);
+  const TOP=50,BASE=285;
+  const R=Math.max(1.5,Math.min(4,pxStep*0.45));
+  const SP=2*R+1.5;
+  const MAXV=Math.floor((BASE-110)/SP);
+  const GREEN='#4ade80',CORAL='#ff7a59',AMBER='#fbbf24';
+  const colFor=(i,n)=>clp[i]?AMBER:(n>1?CORAL:GREEN);
+  let svg='<defs><clipPath id="cp"><rect x="20" y="0" width="640" height="300"/></clipPath></defs>';
+  svg+='<line x1="20" y1="'+TOP+'" x2="660" y2="'+TOP+'" stroke="#3b5a58" stroke-width="1"/><line x1="20" y1="292" x2="660" y2="292" stroke="#3b5a58" stroke-width="1"/>';
+  svg+='<g clip-path="url(#cp)">';
+  g.forEach((idx,c)=>{
+    const x=X((c-zp)*s),bw=Math.max(pxStep,1);
+    const anyClip=idx.some(i=>clp[i]);
+    svg+='<rect x="'+(x-bw/2).toFixed(1)+'" y="64" width="'+bw.toFixed(1)+'" height="'+(BASE+8-64)+'" fill="'+(anyClip?'rgba(251,191,36,0.12)':idx.length>1?'rgba(255,122,89,0.10)':'rgba(74,222,128,0.06)')+'"/>';
+  });
+  if(clipActive){
+    [cl,ch].forEach(v=>{const x=X(v).toFixed(1);svg+='<line x1="'+x+'" y1="'+(TOP-6)+'" x2="'+x+'" y2="292" stroke="'+AMBER+'" stroke-width="1.2" stroke-dasharray="4 3"/>'});
+  }
+  g.forEach((idx,c)=>{
+    const xs=X((c-zp)*s);
+    idx.forEach((i,k)=>{
+      const yk=BASE-Math.min(k,MAXV-1)*SP;
+      svg+='<line x1="'+X(pts[i]).toFixed(1)+'" y1="'+TOP+'" x2="'+xs.toFixed(1)+'" y2="'+yk.toFixed(1)+'" stroke="'+colFor(i,idx.length)+'" stroke-opacity="'+(clp[i]?0.45:idx.length>1?0.28:0.18)+'" stroke-width="1"/>';
+    });
+  });
+  g.forEach((idx,c)=>{
+    const xs=X((c-zp)*s),n=idx.length;
+    svg+='<line x1="'+xs.toFixed(1)+'" y1="286" x2="'+xs.toFixed(1)+'" y2="296" stroke="#fbbf24" stroke-width="1.5"/>';
+    const vis=Math.min(n,MAXV);
+    for(let k=0;k<vis;k++){svg+='<circle cx="'+xs.toFixed(1)+'" cy="'+(BASE-k*SP).toFixed(1)+'" r="'+R.toFixed(1)+'" fill="'+colFor(idx[k],n)+'"/>'}
+    if(n>1&&(pxStep>=8||n>=3)){svg+='<text x="'+xs.toFixed(1)+'" y="'+(BASE-(vis-1)*SP-R-4).toFixed(1)+'" font-size="11" fill="#ffd7cc" text-anchor="middle">x'+n+'</text>'}
+  });
+  g.forEach((idx)=>{idx.forEach(i=>{svg+='<circle cx="'+X(pts[i]).toFixed(1)+'" cy="'+TOP+'" r="2.5" fill="'+colFor(i,idx.length)+'"/>'})});
+  svg+='</g>';
+  svg+='<text x="20" y="14" font-size="11" fill="#9db8b4">Original float values</text>';
+  svg+='<text x="20" y="30" font-size="11" fill="#9db8b4">each dot is a different number</text>';
+  svg+='<text x="20" y="308" font-size="11" fill="#9db8b4">'+fmt(a)+'</text><text x="340" y="308" font-size="11" fill="#9db8b4" text-anchor="middle">zoom x'+zf.toFixed(1)+'</text><text x="660" y="308" font-size="11" fill="#9db8b4" text-anchor="end">'+fmt(b)+'</text>';
+  svg+='<text x="20" y="328" font-size="11" fill="#9db8b4">INT8 codes (yellow ticks): each stack is one value after round trip</text>';
+  $('strip').innerHTML=svg;
+
+  const nOwn=pts.filter((x,i)=>!clp[i]&&g.get(q[i]).length===1).length;
+  const nShared=pts.filter((x,i)=>!clp[i]&&g.get(q[i]).length>1).length;
+  let leg='<span><span class="dot" style="background:#4ade80"></span>Kept its own code: '+nOwn+' points</span><span><span class="dot" style="background:#ff7a59"></span>Shares a code with another point: '+nShared+' points</span>';
+  if(clipActive)leg+='<span><span class="dot" style="background:#fbbf24"></span>Clipped, saturated to the edge: '+nClip+' points</span><span>Dashed lines mark the clip range</span>';
+  $('legend').innerHTML=leg;
+
+  $('coll').innerHTML=groups.length?groups.slice(0,5).map(([c,idx])=>{
+    const vals=idx.map(i=>pts[i]);
+    const sp=vals[vals.length-1]-vals[0];
+    const shown=vals.slice(0,6).map(fmt).join(', ')+(vals.length>6?', +'+(vals.length-6)+' more':'');
+    const k=idx.filter(i=>clp[i]).length;
+    return '<div class="g"><b>'+idx.length+' points</b> all become <b>'+fmt((c-zp)*s)+'</b> (code '+c+')'+(k?' <span>includes '+k+' clipped</span>':'')+'<br><span>'+shown+'</span><br><span>Spread of '+fmt(sp)+' erased</span></div>';
+  }).join(''):'<div class="note">No two points share a code in this setup. Try the tight cluster + outlier distribution, or a wider range.</div>';
+}
+$('go').onclick=()=>{gen();run()};
+['lo','hi','mode'].forEach(id=>$(id).addEventListener('input',()=>{if(id!=='mode'){view=null;gen()}run()}));
+$('dist').addEventListener('change',()=>{view=null;gen();run()});
+$('clip').addEventListener('change',()=>{updateClipUI();run()});
+['pct','cmin','cmax'].forEach(id=>$(id).addEventListener('input',run));
+document.querySelectorAll('[data-p]').forEach(b=>b.onclick=()=>{const p=b.dataset.p.split(',');$('lo').value=p[0];$('hi').value=p[1];view=null;gen();run()});
+function zoom(f,cx){
+  const lo=parseFloat($('lo').value),hi=parseFloat($('hi').value);
+  if(!view||!(hi>lo))return;
+  const c=cx==null?(view[0]+view[1])/2:cx;
+  const a=c-(c-view[0])*f,b=c+(view[1]-c)*f;
+  const full=(hi-lo)*1.04;
+  if(b-a>=full){view=null;run();return}
+  if(b-a<full/5000)return;
+  view=[a,b];run();
+}
+$('zin').onclick=()=>zoom(0.5);
+$('zout').onclick=()=>zoom(2);
+$('zreset').onclick=()=>{view=null;run()};
+$('zbig').onclick=()=>{
+  if(bigLevel==null){$('err').textContent='No shared codes to zoom to yet.';return}
+  view=[bigLevel-20*lastS,bigLevel+20*lastS];run();
+};
+const st=$('strip');
+function svgX(e){const r=st.getBoundingClientRect();return (e.clientX-r.left)/r.width*680}
+function valAt(e){return view[0]+(svgX(e)-20)/640*(view[1]-view[0])}
+st.addEventListener('wheel',e=>{e.preventDefault();if(view)zoom(e.deltaY<0?0.8:1.25,valAt(e))},{passive:false});
+let drag=null;
+st.addEventListener('pointerdown',e=>{if(!view)return;drag={x:svgX(e),v:[view[0],view[1]]};st.setPointerCapture(e.pointerId);st.style.cursor='grabbing'});
+st.addEventListener('pointermove',e=>{if(!drag)return;const dx=(svgX(e)-drag.x)/640*(drag.v[1]-drag.v[0]);view=[drag.v[0]-dx,drag.v[1]-dx];run()});
+st.addEventListener('pointerup',()=>{drag=null;st.style.cursor='grab'});
+updateClipUI();
+gen();run();
+
+/* ---------- Part 2: granularity lab ---------- */
+const MR=16,MC=32,CELL=18,MX0=52,OUT_R=5,OUT_C=21;
+let mseed=42,mBase=null;
+function rng(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+function mGen(seed){
+  const r=rng(seed);
+  const g=()=>{let u=0,v=0;while(!u)u=r();while(!v)v=r();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v)};
+  const base=[],aux=[],sgn=[];
+  for(let i=0;i<MR*MC;i++){base.push(g());aux.push(r());sgn.push(r()<0.5?-1:1)}
+  const few=new Set();
+  while(few.size<5)few.add(Math.floor(r()*MR*MC));
+  mBase={base,aux,sgn,few:[...few]};
+}
+function mWeights(){
+  const pat=$('m-out').value,mg=parseFloat($('m-mag').value);
+  const m=isNaN(mg)||mg<1?1:mg;
+  const w=mBase.base.slice(),isOut=new Array(MR*MC).fill(false);
+  const setOut=i=>{w[i]=mBase.sgn[i]*m*(0.8+0.4*mBase.aux[i]);isOut[i]=true};
+  if(pat==='one')setOut(OUT_R*MC+OUT_C);
+  else if(pat==='few')mBase.few.forEach(setOut);
+  else if(pat==='col'){for(let r=0;r<MR;r++)setOut(r*MC+OUT_C)}
+  else if(pat==='row'){for(let c=0;c<MC;c++)setOut(OUT_R*MC+c)}
+  return {w,isOut};
+}
+function mGroups(kind,B){
+  const G=[];
+  if(kind==='tensor'){G.push([...Array(MR*MC).keys()])}
+  else if(kind==='row'){for(let r=0;r<MR;r++){const g=[];for(let c=0;c<MC;c++)g.push(r*MC+c);G.push(g)}}
+  else if(kind==='col'){for(let c=0;c<MC;c++){const g=[];for(let r=0;r<MR;r++)g.push(r*MC+c);G.push(g)}}
+  else{for(let r=0;r<MR;r++)for(let c0=0;c0<MC;c0+=B){const g=[];for(let c=c0;c<Math.min(MC,c0+B);c++)g.push(r*MC+c);G.push(g)}}
+  return G;
+}
+function mQuant(w,groups,mode){
+  const dq=new Array(w.length);
+  groups.forEach(g=>{
+    let mn=Infinity,mx=-Infinity;
+    g.forEach(i=>{if(w[i]<mn)mn=w[i];if(w[i]>mx)mx=w[i]});
+    let s,zp,qmin,qmax;
+    if(mode==='sym'){const a=Math.max(Math.abs(mn),Math.abs(mx));s=a>0?a/127:1;zp=0;qmin=-127;qmax=127}
+    else{
+      qmin=-128;qmax=127;
+      if(mx>mn){s=(mx-mn)/255;zp=-128-Math.round(mn/s)}
+      else{const a=Math.abs(mx);s=a>0?a/127:1;zp=0}
+    }
+    g.forEach(i=>{const q=Math.max(qmin,Math.min(qmax,Math.round(w[i]/s)+zp));dq[i]=(q-zp)*s});
+  });
+  return dq;
+}
+function mStats(w,dq,groups,mode){
+  let sum=0,mxe=0;const err=new Array(w.length);
+  for(let i=0;i<w.length;i++){const e=Math.abs(w[i]-dq[i]);err[i]=e;sum+=e;if(e>mxe)mxe=e}
+  const n=groups.length;
+  return {err,mae:sum/w.length,mxe,n,bits:8+n*(16+(mode==='asym'?8:0))/w.length};
+}
+const hexRGB=h=>[parseInt(h.slice(1,3),16),parseInt(h.slice(3,5),16),parseInt(h.slice(5,7),16)];
+const mixC=(a,b,t)=>'rgb('+a.map((x,i)=>Math.round(x+(b[i]-x)*t)).join(',')+')';
+const C_BG=hexRGB('#16282a'),C_TEAL=hexRGB('#2dd4bf'),C_CORAL=hexRGB('#ff7a59'),C_AMB=hexRGB('#fbbf24');
+function mRun(){
+  if(!mBase)mGen(mseed);
+  const mode=$('m-mode').value,sel=$('m-gran').value,B=parseInt($('m-b').value,10);
+  const {w,isOut}=mWeights();
+  const kinds=[['tensor','Per-tensor'],['row','Per-row'],['col','Per-column'],['block','Block of '+B]];
+  const res={};
+  kinds.forEach(([k])=>{const G=mGroups(k,B);const dq=mQuant(w,G,mode);res[k]=Object.assign({G,dq},mStats(w,dq,G,mode))});
+  const emax=Math.max.apply(null,kinds.map(([k])=>res[k].mxe))||1;
+  const cur=res[sel],curLabel=kinds.find(k=>k[0]===sel)[1];
+
+  const cards=[['Scales stored',cur.n,'']];
+  if(mode==='asym')cards.push(['Zero-points stored',cur.n,'']);
+  cards.push(['Bits per weight',cur.bits.toFixed(2),''],['Mean abs error',fmt(cur.mae),' hero'],['Max abs error',fmt(cur.mxe),'']);
+  $('m-metrics').innerHTML=cards.map(c=>'<div class="m'+c[2]+'"><span>'+c[0]+'</span><b>'+c[1]+'</b></div>').join('');
+
+  const bestK=kinds.reduce((a,b)=>res[b[0]].mae<res[a[0]].mae?b:a);
+  const ratio=res.tensor.mae/res[bestK[0]].mae;
+  let ins;
+  if(ratio<1.1)ins='All four granularities land within about 10% of each other here, so extra scales mostly just cost storage. Try adding an outlier.';
+  else ins='<b>'+bestK[1]+'</b> has the lowest error: '+ratio.toFixed(1)+'&times; lower than per-tensor, for '+(res[bestK[0]].bits-res.tensor.bits).toFixed(2)+' extra bits per weight.';
+  $('m-insight').innerHTML=ins;
+
+  const X=c=>MX0+c*CELL;
+  let s1='<text x="4" y="16" font-size="11" fill="#9db8b4">rows &darr;</text><text x="'+MX0+'" y="16" font-size="11" fill="#9db8b4">columns &rarr; (0 to '+(MC-1)+')</text>';
+  for(let r=0;r<MR;r++)for(let c=0;c<MC;c++){
+    const i=r*MC+c,v=w[i],t=Math.min(1,Math.abs(v)/3);
+    s1+='<rect x="'+X(c)+'" y="'+(24+r*CELL)+'" width="'+(CELL-1)+'" height="'+(CELL-1)+'" fill="'+(v<0?mixC(C_BG,C_TEAL,t):mixC(C_BG,C_CORAL,t))+'"><title>row '+r+', col '+c+': '+fmt(v)+'</title></rect>';
+    if(isOut[i])s1+='<rect x="'+(X(c)+0.5)+'" y="'+(24.5+r*CELL)+'" width="'+(CELL-2)+'" height="'+(CELL-2)+'" fill="none" stroke="#fbbf24" stroke-width="1.5" pointer-events="none"/>';
+  }
+  $('m-svg1').innerHTML=s1;
+
+  const bd=cur.dq,er=cur.err;
+  let s2='<defs><linearGradient id="eg"><stop offset="0" stop-color="#16282a"/><stop offset="1" stop-color="#fbbf24"/></linearGradient></defs>';
+  s2+='<text x="'+MX0+'" y="16" font-size="11" fill="#9db8b4">'+curLabel+', '+(mode==='sym'?'symmetric':'asymmetric')+'</text>';
+  for(let r=0;r<MR;r++)for(let c=0;c<MC;c++){
+    const i=r*MC+c,t=Math.sqrt(Math.min(1,er[i]/emax));
+    s2+='<rect x="'+X(c)+'" y="'+(24+r*CELL)+'" width="'+(CELL-1)+'" height="'+(CELL-1)+'" fill="'+mixC(C_BG,C_AMB,t)+'"><title>row '+r+', col '+c+': '+fmt(w[i])+' becomes '+fmt(bd[i])+', error '+fmt(er[i])+'</title></rect>';
+  }
+  const LN='stroke="#e8f1ef" stroke-opacity="0.55" stroke-width="1" pointer-events="none"';
+  const yb=24+MR*CELL,xr=X(MC)-1;
+  if(sel==='row'||sel==='block')for(let r=1;r<MR;r++)s2+='<line x1="'+MX0+'" y1="'+(24+r*CELL-0.5)+'" x2="'+xr+'" y2="'+(24+r*CELL-0.5)+'" '+LN+'/>';
+  if(sel==='col')for(let c=1;c<MC;c++)s2+='<line x1="'+(X(c)-0.5)+'" y1="24" x2="'+(X(c)-0.5)+'" y2="'+(yb-1)+'" '+LN+'/>';
+  if(sel==='block')for(let c=B;c<MC;c+=B)s2+='<line x1="'+(X(c)-0.5)+'" y1="24" x2="'+(X(c)-0.5)+'" y2="'+(yb-1)+'" '+LN+'/>';
+  s2+='<rect x="'+(MX0-0.5)+'" y="23.5" width="'+(xr-MX0+1.5)+'" height="'+(MR*CELL)+'" fill="none" stroke="#2dd4bf" stroke-width="1.5" pointer-events="none"/>';
+  s2+='<rect x="'+MX0+'" y="'+(yb+16)+'" width="220" height="8" fill="url(#eg)"/>';
+  s2+='<text x="'+(MX0+230)+'" y="'+(yb+24)+'" font-size="11" fill="#9db8b4">0 to '+fmt(emax)+' (largest error across all four)</text>';
+  $('m-svg2').innerHTML=s2;
+  $('m-errnote').innerHTML='White lines mark which weights share a scale'+(sel==='tensor'?' (here: all of them, so there are none)':'')+'. The colour scale is the same for all four granularities, so switching between them is a fair comparison. Brightness uses a square-root scale so small errors stay visible.';
+
+  const best=Math.min.apply(null,kinds.map(([k])=>res[k].mae)),mm=Math.max.apply(null,kinds.map(([k])=>res[k].mae))||1;
+  let t='<thead><tr><th>Granularity</th><th>Scales</th><th>Bits / weight</th><th style="width:34%">Mean abs error</th><th>Max error</th></tr></thead><tbody>';
+  kinds.forEach(([k,label])=>{
+    const r=res[k];
+    t+='<tr data-k="'+k+'" class="'+(k===sel?'sel':'')+'"><td>'+label+'</td><td>'+r.n+'</td><td>'+r.bits.toFixed(2)+'</td><td class="'+(r.mae===best?'best':'')+'"><div class="bar" style="width:'+Math.max(2,r.mae/mm*100).toFixed(1)+'%"></div>'+fmt(r.mae)+'</td><td>'+fmt(r.mxe)+'</td></tr>';
+  });
+  $('m-cmp').innerHTML=t+'</tbody>';
+  document.querySelectorAll('#m-cmp tr[data-k]').forEach(tr=>tr.onclick=()=>{$('m-gran').value=tr.dataset.k;mRun()});
+}
+['m-mode','m-gran','m-b','m-out'].forEach(id=>$(id).addEventListener('change',mRun));
+$('m-mag').addEventListener('input',mRun);
+$('m-new').onclick=()=>{mseed=(Math.random()*1e9)|0;mGen(mseed);mRun()};
+mRun();
+</script>
+</body>
+</html>
