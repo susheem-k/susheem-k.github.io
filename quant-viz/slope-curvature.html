@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Loss, slope and curvature</title>
+<style>
+  :root { --bg:#1a1a19; --card:#232321; --tx:#f0efec; --mu:#c3c2b7; }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:16px; background:var(--bg); color:var(--tx); font-family:system-ui,-apple-system,"Segoe UI",sans-serif; }
+  .row { display:flex; align-items:center; gap:12px; margin:12px 0; }
+  .row label { font-size:14px; color:var(--mu); white-space:nowrap; }
+  .row input[type=range] { flex:1; accent-color:#EF9F27; }
+  .row span { font-size:14px; font-weight:500; min-width:36px; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; }
+  .card { background:var(--card); border-radius:8px; padding:12px 14px; }
+  .card .k { font-size:13px; color:var(--mu); }
+  .card .v { font-size:24px; font-weight:500; }
+  svg { display:block; width:100%; height:auto; }
+</style>
+</head>
+<body>
+<svg id="plot" viewBox="0 0 680 610" role="img" aria-label="Top: loss curves. Middle: slopes, both zero at the minimum. Bottom: curvature, constant at 8 for the sharp minimum and 1 for the wide minimum."></svg>
+<div class="row">
+  <label for="d">Quantization error δ</label>
+  <input type="range" id="d" min="0" max="0.6" step="0.01" value="0.35">
+  <span id="dout">0.35</span>
+</div>
+<div class="cards">
+  <div class="card"><div class="k">Loss rise, sharp</div><div class="v" id="ms">0</div></div>
+  <div class="card"><div class="k">Loss rise, wide</div><div class="v" id="mw">0</div></div>
+  <div class="card"><div class="k">Ratio (= H ratio)</div><div class="v" id="mr">8x</div></div>
+</div>
+<script>
+const Hs=8,Hw=1,CS='#F0997B',CW='#5DCAA5',CA='#EF9F27',TX='#f0efec',GR='#383835',MU='#c3c2b7';
+const L=50,PW=600,X0=-1.2,X1=1.2;
+const P1={t:34,h:160,lo:0,hi:2},P2={t:244,h:130,lo:-4,hi:4},P3={t:424,h:110,lo:0,hi:10};
+const X=w=>L+(w-X0)/(X1-X0)*PW;
+const Y=(P,v)=>P.t+P.h-(v-P.lo)/(P.hi-P.lo)*P.h;
+function path(P,f){let d='',on=false;for(let w=X0;w<=X1+1e-9;w+=0.01){const v=f(w);if(v>=P.lo&&v<=P.hi){d+=(on?'L':'M')+X(w).toFixed(1)+' '+Y(P,v).toFixed(1);on=true}else on=false}return d}
+function t(x,y,s,c,a){return `<text x="${x}" y="${y}" fill="${c}" font-size="12" text-anchor="${a||'start'}" font-family="system-ui,sans-serif">${s}</text>`}
+function ln(P,f,c){return `<path d="${path(P,f)}" fill="none" stroke="${c}" stroke-width="2.5" stroke-linecap="round"/>`}
+function draw(){
+ const d=+document.getElementById('d').value;
+ const ls=Hs/2*d*d,lw=Hw/2*d*d;
+ let s='';
+ s+=t(L,20,'1. Loss L(w): the value we minimize',TX);
+ s+=t(L,230,'2. Slope dL/dw (first derivative): zero at both minima',TX);
+ s+=t(L,410,'3. Curvature d²L/dw² (second derivative): this is what differs',TX);
+ [P1,P2,P3].forEach(P=>{s+=`<rect x="${L}" y="${P.t}" width="${PW}" height="${P.h}" fill="none" stroke="${GR}"/>`});
+ s+=`<line x1="${X(0)}" y1="${P1.t}" x2="${X(0)}" y2="${P3.t+P3.h}" stroke="${GR}" stroke-dasharray="3 4"/>`;
+ s+=`<line x1="${L}" y1="${Y(P2,0)}" x2="${L+PW}" y2="${Y(P2,0)}" stroke="#898781"/>`;
+ s+=ln(P1,w=>Hs/2*w*w,CS)+ln(P1,w=>Hw/2*w*w,CW);
+ s+=ln(P2,w=>Hs*w,CS)+ln(P2,w=>Hw*w,CW);
+ s+=ln(P3,w=>Hs,CS)+ln(P3,w=>Hw,CW);
+ s+=t(X(0.73),P1.t+14,'sharp minimum',CS);
+ s+=t(X(1.18),Y(P1,0.72)-8,'wide minimum',CW,'end');
+ s+=t(X(0.53),P2.t+14,'sharp: steep line',CS);
+ s+=t(X(1.18),Y(P2,1.2)+18,'wide: gentle line',CW,'end');
+ s+=t(X(1.18),Y(P3,Hs)-8,'sharp: H = 8',CS,'end');
+ s+=t(X(1.18),Y(P3,Hw)-8,'wide: H = 1',CW,'end');
+ s+=t(X(-1.15),Y(P3,5),'constant for a quadratic',MU);
+ s+=`<circle cx="${X(0)}" cy="${Y(P2,0)}" r="5" fill="${CA}"/>`;
+ s+=t(X(0)-10,Y(P2,0)-10,'slope = 0 for both',CA,'end');
+ if(d>0){
+  s+=`<line x1="${X(d)}" y1="${P1.t}" x2="${X(d)}" y2="${P3.t+P3.h}" stroke="${CA}" stroke-dasharray="4 4"/>`;
+  s+=`<line x1="${X(0)}" y1="${Y(P1,ls)}" x2="${X(d)}" y2="${Y(P1,ls)}" stroke="${CS}" stroke-dasharray="2 3"/>`;
+  s+=`<line x1="${X(0)}" y1="${Y(P1,lw)}" x2="${X(d)}" y2="${Y(P1,lw)}" stroke="${CW}" stroke-dasharray="2 3"/>`;
+  s+=`<circle cx="${X(d)}" cy="${Y(P1,ls)}" r="5" fill="${CS}" stroke="#1a1a19" stroke-width="2"/>`;
+  s+=`<circle cx="${X(d)}" cy="${Y(P1,lw)}" r="5" fill="${CW}" stroke="#1a1a19" stroke-width="2"/>`;
+  if(Hs*d<=4)s+=`<circle cx="${X(d)}" cy="${Y(P2,Hs*d)}" r="5" fill="${CS}" stroke="#1a1a19" stroke-width="2"/>`;
+  s+=`<circle cx="${X(d)}" cy="${Y(P2,Hw*d)}" r="5" fill="${CW}" stroke="#1a1a19" stroke-width="2"/>`;
+  s+=`<circle cx="${X(d)}" cy="${Y(P3,Hs)}" r="5" fill="${CS}" stroke="#1a1a19" stroke-width="2"/>`;
+  s+=`<circle cx="${X(d)}" cy="${Y(P3,Hw)}" r="5" fill="${CW}" stroke="#1a1a19" stroke-width="2"/>`;
+ }
+ s+=t(X(0),P3.t+P3.h+22,'w* (minimum)',MU,'middle');
+ s+=t(X(d),P3.t+P3.h+22,'w* + δ',CA,'middle');
+ document.getElementById('plot').innerHTML=s;
+ document.getElementById('dout').textContent=d.toFixed(2);
+ document.getElementById('ms').textContent=ls.toFixed(3);
+ document.getElementById('mw').textContent=lw.toFixed(3);
+ document.getElementById('mr').textContent=(Hs/Hw)+'x';
+}
+document.getElementById('d').addEventListener('input',draw);
+draw();
+</script>
+</body>
+</html>

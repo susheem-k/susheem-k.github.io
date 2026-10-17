@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Why BitNet keeps a latent weight</title>
+<style>
+  :root { --bg:#1a1a19; --card:#232321; --tx:#f0efec; --mu:#c3c2b7; }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:16px; background:var(--bg); color:var(--tx); font-family:system-ui,-apple-system,"Segoe UI",sans-serif; }
+  .bar { display:flex; gap:8px; margin:0 0 12px; flex-wrap:wrap; align-items:center; }
+  button { background:transparent; color:var(--tx); border:1px solid #5a5a56; border-radius:8px; padding:8px 14px; font-size:14px; cursor:pointer; }
+  button:hover { background:var(--card); }
+  button:active { transform:scale(0.98); }
+  #cnt { font-size:14px; color:var(--mu); margin-left:8px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:12px; }
+  .panel { background:var(--card); border-radius:12px; padding:10px; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:12px; margin-top:12px; }
+  .card { background:var(--card); border-radius:8px; padding:12px 14px; }
+  .card .k { font-size:13px; color:var(--mu); }
+  .card .v { font-size:24px; font-weight:500; }
+  svg { display:block; width:100%; height:auto; }
+</style>
+</head>
+<body>
+<div class="bar">
+  <button id="b1">Train 1 step</button>
+  <button id="b10">Train 10 steps</button>
+  <button id="br">Reset</button>
+  <span id="cnt"></span>
+</div>
+<div class="grid">
+  <div class="panel"><svg id="L" viewBox="0 0 330 190" role="img" aria-label="Naive approach: weight stored only as minus one or plus one"></svg></div>
+  <div class="panel"><svg id="R" viewBox="0 0 330 190" role="img" aria-label="Latent weight approach: a continuous weight whose sign is used in the forward pass"></svg></div>
+</div>
+<div class="cards">
+  <div class="card"><div class="k">Naive: weight used in forward pass</div><div class="v" id="mL">-1</div></div>
+  <div class="card"><div class="k">Latent: weight used in forward pass</div><div class="v" id="mR">-1</div></div>
+</div>
+<script>
+const CS='#F0997B',CW='#5DCAA5',CA='#EF9F27',TX='#f0efec',GR='#383835',MU='#c3c2b7';
+const STEP=0.05,START=-0.32;let n=0;
+const X=w=>30+(w+1.2)/2.4*270;
+function t(x,y,s,c,a,sz){return `<text x="${x}" y="${y}" fill="${c}" font-size="${sz||12}" text-anchor="${a||'start'}" font-family="system-ui,sans-serif">${s}</text>`}
+function draw(){
+ let a='';
+ a+=t(16,22,'A. Store only the 1-bit weight',TX,'start',13);
+ a+=t(16,40,'Update must land on -1 or +1',MU);
+ a+=`<line x1="${X(-1.2)}" y1="95" x2="${X(1.2)}" y2="95" stroke="#898781"/>`;
+ [-1,1].forEach(v=>{a+=`<circle cx="${X(v)}" cy="95" r="11" fill="none" stroke="${GR}" stroke-width="2"/>`+t(X(v),130,v>0?'+1':'-1',MU,'middle')});
+ a+=`<circle cx="${X(-1)}" cy="95" r="7" fill="${CA}"/>`;
+ if(n>0){
+  a+=`<circle cx="${X(-1+STEP)}" cy="95" r="5" fill="none" stroke="${CS}" stroke-dasharray="2 2"/>`;
+  a+=t(X(-1+STEP)+4,72,'wants -0.95',CS);
+  a+=t(165,160,'no slot there, rounds back to -1',CS,'middle');
+  a+=t(165,178,'weight never moves, however long you train',MU,'middle');
+ } else a+=t(165,165,'press train to apply a gradient update',MU,'middle');
+ document.getElementById('L').innerHTML=a;
+ const w=START+STEP*n,s=w>0?1:-1;
+ let b='';
+ b+=t(16,22,'B. Keep a latent weight',TX,'start',13);
+ b+=t(16,40,'Forward pass uses sign(latent)',MU);
+ b+=`<rect x="${X(-1.2)}" y="75" width="${X(0)-X(-1.2)}" height="40" fill="${CS}" opacity="0.18"/>`;
+ b+=`<rect x="${X(0)}" y="75" width="${X(1.2)-X(0)}" height="40" fill="${CW}" opacity="0.18"/>`;
+ b+=`<line x1="${X(0)}" y1="68" x2="${X(0)}" y2="122" stroke="${TX}" stroke-dasharray="3 3"/>`;
+ b+=`<line x1="${X(-1.2)}" y1="95" x2="${X(1.2)}" y2="95" stroke="#898781"/>`;
+ b+=t(X(-0.6),135,'acts as -1',CS,'middle')+t(X(0.6),135,'acts as +1',CW,'middle');
+ b+=`<circle cx="${X(w)}" cy="95" r="7" fill="${CA}"/>`;
+ b+=t(X(w),64,'latent '+w.toFixed(2),CA,'middle');
+ b+=t(165,160,n===0?'press train to apply a gradient update':(s>0?'crossed zero at step '+Math.ceil((0-START)/STEP+1e-9)+': weight flipped to +1':'small updates are piling up in the latent value'),s>0?CW:MU,'middle');
+ b+=t(165,178,s>0?'slow votes became a flip':'still -1, but getting closer',MU,'middle');
+ document.getElementById('R').innerHTML=b;
+ document.getElementById('mL').textContent='-1';
+ document.getElementById('mR').textContent=s>0?'+1':'-1';
+ document.getElementById('cnt').textContent='Step '+n+'. Every step the gradient says: push this weight up by '+STEP.toFixed(2);
+}
+document.getElementById('b1').onclick=()=>{n++;draw()};
+document.getElementById('b10').onclick=()=>{n+=10;draw()};
+document.getElementById('br').onclick=()=>{n=0;draw()};
+draw();
+</script>
+</body>
+</html>
